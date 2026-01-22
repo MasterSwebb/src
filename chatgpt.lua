@@ -22,6 +22,7 @@ local Window = Library:CreateWindow({
 local AimAssistPage = Window:CreatePage("Aim Assist")
 local VisualsPage = Window:CreatePage("Visuals")
 local TriggerbotPage = Window:CreatePage("Triggerbot")
+local BringAllPage = Window:CreatePage("Bring All")
 local HitboxPage = Window:CreatePage("Hitbox")
 
 -- Aim Assist Tab
@@ -510,10 +511,25 @@ end
 
 local function RemoveESP(player)
 	if ESPObjects[player] then
-		for _, obj in pairs(ESPObjects[player]) do
-			obj:Remove()
+		for name, obj in pairs(ESPObjects[player]) do
+			if name == "Skeleton" then
+				for _, line in pairs(obj) do
+					if line and line.Remove then
+						line:Remove()
+					end
+				end
+			else
+				if obj and obj.Remove then
+					obj:Remove()
+				end
+			end
 		end
 		ESPObjects[player] = nil
+	end
+	
+	if Highlights[player] then
+		Highlights[player]:Destroy()
+		Highlights[player] = nil
 	end
 end
 
@@ -736,9 +752,64 @@ end
 -- Update ESP Loop
 RunService.RenderStepped:Connect(UpdateESP)
 
+-- Player event tracking
+local PlayerStates = {}
+
+-- Track player states for death/respawn detection
+local function UpdatePlayerStates()
+	for _, player in pairs(Players:GetPlayers()) do
+		if player ~= LocalPlayer then
+			if not PlayerStates[player] then
+				PlayerStates[player] = {character = nil, isAlive = false}
+			end
+			
+			local state = PlayerStates[player]
+			local character = player.Character
+			local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+			
+			-- Check for respawn
+			if character and character ~= state.character then
+				if state.character then
+					print(player.Name .. " respawned")
+				end
+				state.character = character
+				state.isAlive = humanoid and humanoid.Health > 0
+			end
+			
+			-- Check for death
+			if humanoid and state.isAlive and humanoid.Health <= 0 then
+				state.isAlive = false
+				print(player.Name .. " died")
+			elseif humanoid and not state.isAlive and humanoid.Health > 0 then
+				state.isAlive = true
+			end
+		end
+	end
+end
+
 -- Handle Player Addition/Removal
-Players.PlayerAdded:Connect(CreateESP)
-Players.PlayerRemoving:Connect(RemoveESP)
+Players.PlayerAdded:Connect(function(player)
+	CreateESP(player)
+	PlayerStates[player] = {character = nil, isAlive = false}
+	print(player.Name .. " joined")
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	RemoveESP(player)
+	PlayerStates[player] = nil
+	print(player.Name .. " left")
+end)
+
+-- Initialize existing players
+for _, player in pairs(Players:GetPlayers()) do
+	if player ~= LocalPlayer then
+		CreateESP(player)
+		PlayerStates[player] = {character = nil, isAlive = false}
+	end
+end
+
+-- Update player states
+RunService.Heartbeat:Connect(UpdatePlayerStates)
 
 -- Triggerbot Tab
 _G.TriggerbotEnabled = false
@@ -896,6 +967,98 @@ game:GetService("RunService").RenderStepped:Connect(function()
 	end
 end)
 
+-- Bring All Tab
+_G.BringAllKey = "B"
+_G.BringAllEnabled = false
+_G.BringDistance = 10
+_G.BringHeight = 0
+
+Window:CreateToggle({
+	Parent = BringAllPage.Content,
+	Text = "Enable Bring All",
+	Default = false,
+	Callback = function(value)
+		_G.BringAllEnabled = value
+	end
+})
+
+Window:CreateDropdown({
+	Parent = BringAllPage.Content,
+	Text = "Bring All Key",
+	Options = {"B", "V", "X", "Z", "C", "F", "G", "H"},
+	Default = "B",
+	Callback = function(value)
+		_G.BringAllKey = value
+	end
+})
+
+Window:CreateSlider({
+	Parent = BringAllPage.Content,
+	Text = "Bring Distance",
+	Min = 5,
+	Max = 50,
+	Default = 10,
+	Callback = function(value)
+		_G.BringDistance = value
+	end
+})
+
+Window:CreateSlider({
+	Parent = BringAllPage.Content,
+	Text = "Bring Height",
+	Min = -10,
+	Max = 10,
+	Default = 0,
+	Callback = function(value)
+		_G.BringHeight = value
+	end
+})
+
+-- Bring All Logic (Hold Key) - All players in exact same spot for easy hits
+local isBringingAll = false
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then return end
+	
+	if input.KeyCode == Enum.KeyCode[_G.BringAllKey] and _G.BringAllEnabled then
+		isBringingAll = true
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(input, gameProcessed)
+	if input.KeyCode == Enum.KeyCode[_G.BringAllKey] then
+		isBringingAll = false
+	end
+end)
+
+-- Bring All Loop - All players in exact same spot for easy targeting
+RunService.Heartbeat:Connect(function()
+	if isBringingAll and _G.BringAllEnabled and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+		local myChar = LocalPlayer.Character
+		local myHRP = myChar.HumanoidRootPart
+		local frontPosition = myHRP.CFrame + (myHRP.CFrame.LookVector * _G.BringDistance) + Vector3.new(0, _G.BringHeight, 0)
+		
+		for _, player in pairs(Players:GetPlayers()) do
+			if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+				pcall(function()
+					-- Make sure they're all in the exact same CFrame for easy hits
+					player.Character.HumanoidRootPart.CFrame = frontPosition
+					player.Character.HumanoidRootPart.Anchored = true
+				end)
+			end
+		end
+	else
+		-- Unanchor players when not bringing
+		for _, player in pairs(Players:GetPlayers()) do
+			if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+				pcall(function()
+					player.Character.HumanoidRootPart.Anchored = false
+				end)
+			end
+		end
+	end
+end)
+
+
 -- Hitbox Tab
 _G.HitboxExpander = false
 _G.HitboxSize = 10
@@ -950,16 +1113,6 @@ Window:CreateDropdown({
 	Default = "HumanoidRootPart",
 	Callback = function(value)
 		_G.HitboxPart = value
-	end
-})
-
-Window:CreateDropdown({
-	Parent = HitboxPage.Content,
-	Text = "Theme",
-	Options = {"Dark", "Light", "Blue"},
-	Default = "Dark",
-	Callback = function(value)
-		print("Theme:", value)
 	end
 })
 
